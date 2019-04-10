@@ -1,0 +1,26 @@
+apiservices-proxy
+---
+This is a development environment setup to do quick dev roundtrips with the https://github.com/DirectXMan12/k8s-prometheus-adapter.
+
+It contains:
+- A simple (and insecure!) TLS proxy
+- Deployment manifests to set up k8s the metrics API
+
+Prerequisites on the cluster:
+-  Prometheus Operator
+
+To start development, simply execute
+
+$ kubectl apply -f apiservice.yaml
+$ kubectl -n monitoring port-forward svc/prometheus-k8s 9090
+$ cd k8s-prometheus-adapter
+$ make
+$ adapter \
+  --lister-kubeconfig=$KUBECONFIG \
+  --authentication-kubeconfig=$KUBECONFIG \
+  --authorization-kubeconfig=$KUBECONFIG \
+  --config=promadapter-config.yaml \
+  --logtostderr=true \
+  --metrics-relist-interval=1m \
+  --prometheus-url=http://localhost:9090 \
+  --secure-port=8443
