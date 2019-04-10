@@ -1,0 +1,264 @@
+# create prometheus custom resource
+# prom operator will deploy a prometheus instance
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  labels:
+    prometheus: k8s
+  name: example
+  namespace: default
+spec:
+  alerting:
+    alertmanagers:
+      - name: alertmanager-main
+        namespace: monitoring
+        port: web
+  replicas: 2
+  ruleSelector:
+    matchLabels:
+      prometheus: k8s
+      role: prometheus-rulefiles
+  securityContext: {}
+  serviceAccountName: prometheus-k8s
+  serviceMonitorSelector:
+    matchExpressions:
+      - key: k8s-app
+        operator: Exists
+  version: v2.3.2
+---
+# deploy a sample application
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: example-app
+  namespace: default
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: example-app
+    spec:
+      containers:
+      - name: example-app
+        image: quay.io/coreos/prometheus-example-app
+        ports:
+        - name: web
+          containerPort: 8080
+---
+# expose example app as a service
+kind: Service
+apiVersion: v1
+metadata:
+  name: example-app
+  namespace: default
+  labels:
+    tier: frontend
+spec:
+  selector:
+    app: example-app
+  ports:
+  - name: web
+    port: 8080
+---
+# create a service monitor,
+# prom operator will then create a target
+# Check with:
+# 1. Start `oc port-forward svc/prometheus-operated 9090`
+# 2. Open http://localhost:9090/targets
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: example-app
+  namespace: default
+  labels:
+    k8s-app: example-app
+spec:
+  selector:
+    matchLabels:
+      tier: frontend
+  endpoints:
+  - port: web
+---
+
+# prometheus adapter boiler plate
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: custom-metrics-apiserver
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: custom-metrics-server-resources
+rules:
+- apiGroups:
+  - custom.metrics.k8s.io
+  resources: ["*"]
+  verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: custom-metrics-resource-reader
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  - pods
+  - services
+  verbs:
+  - get
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: custom-metrics:system:auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+- kind: ServiceAccount
+  name: custom-metrics-apiserver
+  namespace: default
+---
+# See https://kubernetes.io/docs/tasks/access-kubernetes-api/setup-extension-api-server/#setup-an-extension-api-server-to-work-with-the-aggregation-layer
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: custom-metrics-auth-reader
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+- kind: ServiceAccount
+  name: custom-metrics-apiserver
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: custom-metrics-resource-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: custom-metrics-resource-reader
+subjects:
+- kind: ServiceAccount
+  name: custom-metrics-apiserver
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hpa-controller-custom-metrics
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: custom-metrics-server-resources
+subjects:
+- kind: ServiceAccount
+  name: horizontal-pod-autoscaler
+  namespace: kube-system
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: default-metrics
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: custom-metrics-server-resources
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+---
+
+# register prometheus adapter as an api service
+# Check with:
+# $ kubectl get apiservices | grep custom.metric
+# v1beta1.custom.metrics.k8s.io            default/prometheus-adapter                                               True        20m
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: prometheus-adapter-proxy
+  namespace: default
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: prometheus-adapter-proxy
+    spec:
+      containers:
+      - name: ssl-proxy
+        image: quay.io/surbania/ssl-proxy:2841a6c
+        command: ["/ssl-proxy"]
+        args: ["-addr", "0.0.0.0:8443", "-to", "https://192.168.39.1:8443"]
+        ports:
+        - name: https
+          containerPort: 8443
+---
+# expose example app as a service
+kind: Service
+apiVersion: v1
+metadata:
+  labels:
+    name: prometheus-adapter
+  name: prometheus-adapter
+  namespace: default
+spec:
+  selector:
+    app: prometheus-adapter-proxy
+  ports:
+  - name: web
+    port: 443
+    targetPort: 8443
+---
+# expose dev node service in k8s
+kind: Endpoints
+apiVersion: v1
+metadata:
+  name: prometheus-adapter
+subsets:
+  - addresses:
+      - ip: 192.168.39.31
+    ports:
+      - port: 8444
+---
+apiVersion: apiregistration.k8s.io/v1beta1
+kind: APIService
+metadata:
+  name: v1beta1.custom.metrics.k8s.io
+spec:
+  service:
+    name: prometheus-adapter
+    namespace: default
+  group: custom.metrics.k8s.io
+  version: v1beta1
+  insecureSkipTLSVerify: true
+  groupPriorityMinimum: 100
+  versionPriority: 100
+---
+apiVersion: apiregistration.k8s.io/v1beta1
+kind: APIService
+metadata:
+  name: v1beta1.external.metrics.k8s.io
+spec:
+  service:
+    name: prometheus-adapter
+    namespace: default
+  group: external.metrics.k8s.io
+  version: v1beta1
+  insecureSkipTLSVerify: true
+  groupPriorityMinimum: 100
+  versionPriority: 100
+---
