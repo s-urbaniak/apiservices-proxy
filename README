@@ -1,13 +1,15 @@
 apiservices-proxy
 ---
-This is a development environment setup to do quick dev roundtrips with the https://github.com/DirectXMan12/k8s-prometheus-adapter.
+This is a development environment setup to do quick dev roundtrips with the
+https://github.com/DirectXMan12/k8s-prometheus-adapter.
 
 It contains:
 - A simple (and insecure!) TLS proxy
 - Deployment manifests to set up k8s the metrics API
 
-Prerequisites on the cluster:
--  Prometheus Operator
+Prerequisites:
+- Minikube
+- Prometheus Operator
 
 To start development, simply execute
 
